@@ -35,10 +35,50 @@
 
   nixpkgs.overlays = [
     (self: super: {
+
       # Add package to create EFI boot stub
       chromiumos-efi-bootstub = super.callPackage ./chromiumos-efi-bootstub.nix {};
+
+      # Override kernel to use config options that ChromiumOS build uses;
+      # otherwise the Chromebook does not boot.
+      # TODO: Figure out what config settings make it boot, and enable those
+      #       in addition to the normal NixOS kernel settings (using
+      #       `kernelPatches.extraConfig`) instead of using ChromiumOS's
+      #       upstream ones as a base and adding NixOS's settings on top.
+      #       Adding just the ones from ChromeOS's file
+      #         src/third_party/kernel/v4.4/chromeos/config/x86_64/chromiumos-x86_64.flavour.config
+      #       was not sufficient.
+      linux_4_4 = super.linuxManualConfig {
+        inherit (super) stdenv;
+        inherit (super.linux_4_4) src version;
+        configfile =
+          let
+            # Almost upstream; I've added KEXEC and some console settings
+            # so that kernel messages are printed on boot for debugging.
+            upstreamConfigFile = ./chromebook-kernel-config;
+            # What to append to the kernel `chromebook-kernel-config`:
+            # Things that NixOS requires in addition in order to build/run.
+            # `kernelPatches` doesn't seem to work here for unknown reason.
+            appendConfigFile = pkgs.writeText "kernel-append-config" ''
+              CONFIG_AUTOFS4_FS=y
+            '';
+          in
+            pkgs.runCommand "kernel-config" {} ''
+              cat ${upstreamConfigFile} ${appendConfigFile} > $out
+            '';
+        allowImportFromDerivation = true;
+      };
+
     })
   ];
+
+  # Select the kernel that we've overridden with custom config above.
+  boot.kernelPackages = pkgs.linuxPackages_4_4;
+
+  # The custom kernel config currently doesn't allow the firewall;
+  # getting this when it's on:
+  #     This kernel does not support rpfilter
+  networking.firewall.enable = false;
 
   # A ChromeOS kernel is a normal `vmlinux` bzImage with some extra
   # signatures created by the `vbutil_kernel` tool.
