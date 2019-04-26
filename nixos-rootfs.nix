@@ -3,6 +3,9 @@
 # You can also use
 #     -A config.system.build.toplevel
 # to build something you can browse locally (that uses symlinks into your nix store).
+# You can use
+#     -A config.system.build.initialRamdisk
+# to build directly the initrd if you want to iterate on that.
 
 {config, pkgs, ...}:
 let
@@ -12,6 +15,9 @@ let
 
   initrdFullPath =
     "${config.system.build.initialRamdisk}/initrd";
+
+  # PlopKexec needs a static busybox build.
+  plopkexec-busybox = pkgs.busybox.override { enableStatic = true; };
 in
 {
   # We need no bootloader, because the Chromebook can't use that anyway.
@@ -38,10 +44,17 @@ in
   # the individual packages still have all their big `.mo` files.
   i18n.supportedLocales = [ (config.i18n.defaultLocale + "/UTF-8") ];
 
+  # Note that as of writing, PlopKexec (1.4.1) does not support
+  # entries with variables
+  # (see its `scan_grub2.cpp`, `ScanGrub2::ScanConfigFile`).
+  # That also means we couldn't use GRUB2's `search` directive,
+  # if we wanted to, or something like `set root=(hd1,gpt3)`.
+  # But we don't need to, because in PlopKexec the partition is
+  # chosen upfront in its menu, and all paths that PlopKexec parses
+  # out of GRUB config files are interpreted as being on that partition.
   system.build.initial-grub-config = pkgs.writeText "initial-grub.cfg" ''
     menuentry "NixOS" {
-      set root=(hd1,gpt3)
-      linux ${kernelImageFullPath}
+      linux ${kernelImageFullPath} init=${config.system.build.toplevel}/init
       initrd ${initrdFullPath}
     }
   '';
@@ -78,14 +91,80 @@ in
     (self: super: {
       # Add package to create EFI boot stub
       chromiumos-efi-bootstub = super.callPackage ./chromiumos-efi-bootstub.nix {};
+
+      plopkexec = super.callPackage ./plopkexec.nix {};
+
+      plopkexec-image-linux_4_4 = super.linuxManualConfig {
+        inherit (super) stdenv;
+        inherit (super.linux_4_4) src version;
+        configfile =
+          let
+            # upstreamConfigFile = "${self.plopkexec.kernelconfig}/config";
+            upstreamConfigFile = self.fetchurl {
+              url = https://raw.githubusercontent.com/eugenesan/chrubuntu-script/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images/stock-4.7.1-plopkexec.config;
+              sha256 = "1v5k3dshgshix6jjdw60xgjj5l9rqi8sidif8dmnkgb7zkslfi1d";
+            };
+
+            initramfs-description = self.writeText "plopkexec-initramfs-description" ''
+              dir /dev 755 0 0
+              nod /dev/console 644 0 0 c 5 1
+              nod /dev/kmsg 644 0 0 c 1 11
+              nod /dev/tty0 644 0 0 c 4 0
+              nod /dev/loop0 644 0 0 b 7 0
+              nod /dev/sda 660 0 0 b 8 0
+              nod /dev/sda1 660 0 0 b 8 1
+              nod /dev/sda2 660 0 0 b 8 2
+              nod /dev/sda3 660 0 0 b 8 3
+              nod /dev/sda4 660 0 0 b 8 4
+              nod /dev/sdb 660 0 0 b 8 16
+              nod /dev/sdb1 660 0 0 b 8 17
+              nod /dev/sdb2 660 0 0 b 8 18
+              nod /dev/sdb3 660 0 0 b 8 19
+              nod /dev/sdb4 660 0 0 b 8 20
+              dir /bin 755 1000 1000
+              dir /proc 755 0 0
+              dir /sys 755 0 0
+              dir /mnt 755 0 0
+              file /init ${self.plopkexec}/init 755 0 0
+            '';
+          in
+            # TODO Add static kexec binary to CONFIG_INITRAMFS_SOURCE
+
+            # See https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt
+            # for a description how `CONFIG_INITRAMFS_SOURCE` works, and an
+            # explanation of the `initramfs-description` format.
+            pkgs.runCommand "kernel-config" {} ''
+              cat ${upstreamConfigFile} > $out
+              substituteInPlace "$out" --replace \
+                'CONFIG_INITRAMFS_SOURCE="initramfs/"' \
+                'CONFIG_INITRAMFS_SOURCE="${initramfs-description} ${plopkexec-busybox}"'
+            '';
+              # substituteInPlace "$out" --replace \
+              #   '# CONFIG_64BIT is not set' \
+              #   'CONFIG_64BIT=y'
+
+              # substituteInPlace "$out" --replace \
+              #   'CONFIG_X86_32=y' \
+              #   'CONFIG_X86_32=n'
+
+              # substituteInPlace "$out" --replace \
+              #   'CONFIG_DRM_I915=m' \
+              #   'CONFIG_DRM_I915=y'
+
+              # substituteInPlace "$out" --replace \
+              #   'CONFIG_AGP_INTEL=m' \
+              #   'CONFIG_AGP_INTEL=y'
+        allowImportFromDerivation = true;
+      };
+
     })
   ];
 
   # Select the kernel that we've overridden with custom config above.
-  boot.kernelPackages = pkgs.linuxPackages_4_4;
+  # boot.kernelPackages = pkgs.linuxPackages_4_4;
   # boot.kernelPackages = pkgs.linuxPackages_4_9; # doesn't work (no modeflash) (but fine when kexec'd)
   # boot.kernelPackages = pkgs.linuxPackages_4_14;
-  # boot.kernelPackages = pkgs.linuxPackages; # 4.19 doens't boot directly (but fine when kexec'd)
+  boot.kernelPackages = pkgs.linuxPackages; # 4.19 doens't boot directly (but fine when kexec'd)
 
   # The custom kernel config currently doesn't allow the firewall;
   # getting this when it's on:
@@ -104,7 +183,9 @@ in
       # kernelPath = kernelImageFullPath;
       # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-linux-4.9.170-ubuntubuild;
       # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-upstream-bisection;
-      kernelPath = ./stock-4.7.1-plopkexec; # from https://github.com/eugenesan/chrubuntu-script/tree/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images
+      # kernelPath = ./stock-4.7.1-plopkexec; # from https://github.com/eugenesan/chrubuntu-script/tree/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images
+      # kernelPath = /home/niklas/src/plopkexec/plopkexec-1.4.1/build/plopkexec;
+      kernelPath = "${pkgs.plopkexec-image-linux_4_4}/bzImage";
       # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
       #   console=tty0
       #   init=/bin/init
@@ -161,8 +242,10 @@ in
   # For convenience if people want to build only the bootstub
   # using `-A config.system.build.bootstub`.
   system.build.bootstub = pkgs.chromiumos-efi-bootstub;
-  system.build.unsigned-chromiumos-kernel = config.boot.kernelPackages.kernel;
-  system.build.nixos-kernel = (import <nixpkgs> {}).linux_4_4;
+
+  system.build.plopkexec = pkgs.plopkexec;
+  system.build.plopkexec-image = pkgs.plopkexec-image-linux_4_4;
+  system.build.plopkexec-busybox = plopkexec-busybox;
 
   # Install new init script; this ensures that /init is updated after every
   # `nixos-rebuild` run on the machine (the kernel can run init from a
@@ -187,26 +270,6 @@ in
       ${config.nix.package.out}/bin/nix-env -p /nix/var/nix/profiles/system --set /run/current-system
     '';
 
-  boot.kernelPatches = [ {
-    name = "chromiumos-inspired";
-    patch = null;
-    # TODO Comment and explain other possible workarounds (special "kexec bootloader kernel" or vmlinux-patching)
-    extraConfig = ''
-      AGP y
-      BLK_DEV_SD y
-      DRM y
-      DRM_I915 y
-      EXT4_FS y
-      KEYBOARD_ATKBD y
-      SCSI y
-      USB y
-      USB_EHCI_HCD y
-      USB_STORAGE y
-      USB_STORAGE_REALTEK y
-    '';
-
-  } ];
-
   # Configuration of the contents of the NixOS system below:
 
   # Empty root password so people can easily use the live image.
@@ -229,6 +292,9 @@ in
     pkgs.beep
     pkgs.dhcpcd
     pkgs.vim
+    pkgs.usbutils # lsusb
+    pkgs.pciutils # lspci
+    pkgs.utillinux # lsblk
   ];
 
   # networking.interfaces."enp0s29f7u1".ipv4.addresses = [
@@ -246,41 +312,47 @@ in
   # TODO comment on busybox problem, get rid of equivalent in `fileSystems`
   boot.initrd.checkJournalingFS = false;
 
-  # boot.initrd.availableKernelModules = [
-  boot.initrd.kernelModules = [
-    "uhci_hcd"
-    "ehci_pci" # detected on NixOS kernel with a few `y`s inserted by me, so `lsmod` shows a lot
-    "ahci"
+  boot.initrd.availableKernelModules = [
+    # "uhci_hcd"
+    # "ehci_pci" # detected on NixOS kernel with a few `y`s inserted by me, so `lsmod` shows a lot
+    # "ahci"
     "ums_realtek"
 
     # "intel-agp"
-    "intel_agp" # TODO check whether this makes a difference
+    # "intel_agp" # TODO check whether this makes a difference
     "i915"
 
-    "ext2"
-    "ext4"
+    # "ext2"
+    # "ext4"
 
-    # Taken from working lsmod (TODO more comments)
-    "chromeos_pstore"
-    "chromeos_laptop"
-    "efi_pstore"
-    "serio_raw"
-    "uas"
-    "i2c_i801"
-    "lpc_ich"
-    "efivarfs"
-    "sd_mod"
-    "vfio_mdev"
-    "kvmgt"
+    # # Taken from working lsmod (TODO more comments)
+    # "chromeos_pstore"
+    # "chromeos_laptop"
+    # "efi_pstore"
+    # "serio_raw"
+    # "uas"
+    # "i2c_i801"
+    # "lpc_ich"
+    # "efivarfs"
+    # "sd_mod"
+    # "vfio_mdev"
+    # "kvmgt"
 
-    # Googled for "linux sdcard module"
-    "sdhci"
-    "sdhci_pci"
-    "mmc_core"
-    "mmc_block"
+    # # Googled for "linux sdcard module"
+    # "sdhci"
+    # "sdhci_pci"
+    # "mmc_core"
+    # "mmc_block"
 
-    # Found via long bisection that the SD card needs this because the reader is connected via USB
-    "ehci_hcd"
+    # # Found via long bisection that the SD card needs this because the reader is connected via USB
+    # "ehci_hcd"
+
+    # # Keyboard
+    # "atkbd"
+    # "cros_ec_keyb"
+  ];
+  boot.initrd.kernelModules = [
+    "i8042" # this makes keyboard and touchpad work
   ];
   boot.initrd.supportedFilesystems = [
     "ext2"
