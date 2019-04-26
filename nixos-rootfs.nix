@@ -18,6 +18,25 @@ let
 
   # PlopKexec needs a static busybox build.
   plopkexec-busybox = pkgs.busybox.override { enableStatic = true; };
+  # TODO clean this up; `makeStaticBinaries` seems critical, the rest perhaps not.
+  #      Perhaps we can also just use `pkgs.pkgsStatic.kexectools`;
+  #      but should check whether avoiding `pkgsStatic` makes the amount of stuff to fetch smaller.
+  static-kexectools = (pkgs.kexectools.override { stdenv = pkgs.stdenvAdapters.makeStaticBinaries pkgs.stdenv; }).overrideAttrs (old: {
+    # nativeBuildInputs = (old.nativeBuildInputs or []) ++ [
+    nativeBuildInputs = [
+      pkgs.pkgsStatic.stdenv.cc
+      # pkgs.pkgsStatic.stdenv.cc.libc
+      # pkgs.stdenv.cc.libc.static
+    ];
+    configureFlags = [
+      # "CFLAGS=-static"
+      # "CPPFLAGS=-static"
+      "BUILD_CC=${pkgs.pkgsStatic.stdenv.cc.targetPrefix}cc"
+    ];
+    patches = (old.patches or []) ++ [
+      "${pkgs.plopkexec.kexectools_static_patch}"
+    ];
+  });
 in
 {
   # We need no bootloader, because the Chromebook can't use that anyway.
@@ -92,44 +111,44 @@ in
       # Add package to create EFI boot stub
       chromiumos-efi-bootstub = super.callPackage ./chromiumos-efi-bootstub.nix {};
 
-      plopkexec = super.callPackage ./plopkexec.nix {};
+      plopkexec = super.callPackage ./plopkexec.nix { mountDevtmpfs = true; };
 
       plopkexec-image-linux_4_4 = super.linuxManualConfig {
-        inherit (super) stdenv;
         inherit (super.linux_4_4) src version;
+        inherit (super) stdenv;
+        allowImportFromDerivation = true;
         configfile =
           let
-            # upstreamConfigFile = "${self.plopkexec.kernelconfig}/config";
-            upstreamConfigFile = self.fetchurl {
-              url = https://raw.githubusercontent.com/eugenesan/chrubuntu-script/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images/stock-4.7.1-plopkexec.config;
-              sha256 = "1v5k3dshgshix6jjdw60xgjj5l9rqi8sidif8dmnkgb7zkslfi1d";
-            };
+            upstreamConfigFile = "${self.plopkexec.kernelconfig}/config";
 
+            # PlopKexec upstream and eugenesan's fork both use a tarball
+            # containing device files to pre-populate `/dev`.
+            # That is rather ugly, because making device files (`mknod`)
+            # or unpacking them from an archive requires root, which is not
+            # nice for building things (requires fakeroot or building as root).
+            # We take a different approach:
+            # * We use the kernel's functionality to create device files using
+            #   a text description as described in the CONFIG_INITRAMFS_SOURCE
+            #   documentation.
+            # * We patched PlopKexec to do the equivalent of
+            #   `mount -t devtmpfs devtmpfs /dev` next to its usual mounts of
+            #   `/proc` and `/sys`.
+            #   That makes Linux populate `/dev` automatically.
+            #
+            # Creating `/dev/console` manually is still needed, otherwise
+            # PlopKexec's UI is invisible (it still boots its default action
+            # after the timeout and you can see that in the dmesg output).
             initramfs-description = self.writeText "plopkexec-initramfs-description" ''
               dir /dev 755 0 0
               nod /dev/console 644 0 0 c 5 1
-              nod /dev/kmsg 644 0 0 c 1 11
-              nod /dev/tty0 644 0 0 c 4 0
-              nod /dev/loop0 644 0 0 b 7 0
-              nod /dev/sda 660 0 0 b 8 0
-              nod /dev/sda1 660 0 0 b 8 1
-              nod /dev/sda2 660 0 0 b 8 2
-              nod /dev/sda3 660 0 0 b 8 3
-              nod /dev/sda4 660 0 0 b 8 4
-              nod /dev/sdb 660 0 0 b 8 16
-              nod /dev/sdb1 660 0 0 b 8 17
-              nod /dev/sdb2 660 0 0 b 8 18
-              nod /dev/sdb3 660 0 0 b 8 19
-              nod /dev/sdb4 660 0 0 b 8 20
               dir /bin 755 1000 1000
               dir /proc 755 0 0
               dir /sys 755 0 0
               dir /mnt 755 0 0
               file /init ${self.plopkexec}/init 755 0 0
+              file /kexec ${static-kexectools}/bin/kexec 755 0 0
             '';
           in
-            # TODO Add static kexec binary to CONFIG_INITRAMFS_SOURCE
-
             # See https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt
             # for a description how `CONFIG_INITRAMFS_SOURCE` works, and an
             # explanation of the `initramfs-description` format.
@@ -139,22 +158,6 @@ in
                 'CONFIG_INITRAMFS_SOURCE="initramfs/"' \
                 'CONFIG_INITRAMFS_SOURCE="${initramfs-description} ${plopkexec-busybox}"'
             '';
-              # substituteInPlace "$out" --replace \
-              #   '# CONFIG_64BIT is not set' \
-              #   'CONFIG_64BIT=y'
-
-              # substituteInPlace "$out" --replace \
-              #   'CONFIG_X86_32=y' \
-              #   'CONFIG_X86_32=n'
-
-              # substituteInPlace "$out" --replace \
-              #   'CONFIG_DRM_I915=m' \
-              #   'CONFIG_DRM_I915=y'
-
-              # substituteInPlace "$out" --replace \
-              #   'CONFIG_AGP_INTEL=m' \
-              #   'CONFIG_AGP_INTEL=y'
-        allowImportFromDerivation = true;
       };
 
     })
@@ -246,6 +249,7 @@ in
   system.build.plopkexec = pkgs.plopkexec;
   system.build.plopkexec-image = pkgs.plopkexec-image-linux_4_4;
   system.build.plopkexec-busybox = plopkexec-busybox;
+  system.build.static-kexectools = static-kexectools;
 
   # Install new init script; this ensures that /init is updated after every
   # `nixos-rebuild` run on the machine (the kernel can run init from a
