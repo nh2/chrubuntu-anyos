@@ -1,9 +1,0 @@
---- a/src/menu.cpp 2016-06-28 20:05:23.000000000 +0200
-+++ b/src/menu.cpp 2019-04-25 22:34:08.418954705 +0200
-@@ -748,7 +748,7 @@
-     
-     //TextColor(DIM, GREEN, BLACK);
-     TextColor(RESET, GREEN, BLACK);
--    printf (title.c_str());
-+    puts (title.c_str());
- }

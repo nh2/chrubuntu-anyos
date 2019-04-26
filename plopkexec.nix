@@ -1,15 +1,25 @@
-{ stdenv, fetchurl, glibc_multi, glibc }:
+{ stdenv, fetchFromGitHub, glibc_multi, glibc }:
 
 stdenv.mkDerivation rec {
   pname = "plopkexec";
-  version = "1.4.1";
+  version = "1.4.1"; # Note: Update `rev` below when changing this
 
-  # The tarball contains large prebuilt binaries for Linux kernel,
-  # an .iso image, source distributions and so on.
-  # We use only the source code from the `src/` subdirectory.
-  src = fetchurl {
-    url = "https://download.plop.at/plopkexec/plopkexec-${version}.tar.gz";
-    sha256 = "0vkbmqy1n9i9vlkgy47cyd5xyjxz188xzsrbb8lakhzkigwzq5ny";
+  # We're not using the upstream tarball from the original author at
+  #     https://download.plop.at/plopkexec
+  # but instead a fork from `eugenesan`, because it implements the critical
+  # feature to detect file systems on the fly:
+  #     https://github.com/eugenesan/chrubuntu-script/blob/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/plopkexec/Changelog#L43-L44
+  #
+  # Also note that for both the original tarball and the GitHub fork:
+  # The code contains large prebuilt binaries for Linux kernel,
+  # an .iso image, vendored source distributions and so on.
+  # We use only the source code from the `src/` subdirectory of the tarball
+  # (which is the `plopkexec/plop` subdirectory in the fork).
+  src = fetchFromGitHub {
+    owner = "eugenesan";
+    repo = "chrubuntu-script";
+    rev = "3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852";
+    sha256 = "0wck9bqqby20p1idhjxapbgzvirz1kbhrbmbvjwc82mhx3pak99h";
   };
 
   outputs = [ "out" "kernelconfig" ];
@@ -18,18 +28,10 @@ stdenv.mkDerivation rec {
     glibc.static
   ];
 
-  patches = [
-    ./plopkexec-fix-warnings.patch
-    # We patch out the `-m32` that plopkexec defaults to because nixpkgs'
-    # `glibc_multi` currently doesn't have a `.static` version yet; see:
-    #     https://github.com/NixOS/nixpkgs/blob/526a406f11d0bd7077c83fc1e734dbb8e9a3061e/pkgs/development/libraries/glibc/multi.nix#L9
-    ./plopkexec-dont-force-architecture.patch
-  ];
-
   enableParallelBuilding = true;
 
   preBuild = ''
-    cd src
+    cd plopkexec/plop
   '';
 
   installPhase = ''
