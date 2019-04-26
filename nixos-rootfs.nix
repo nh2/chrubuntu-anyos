@@ -18,25 +18,50 @@ let
 
   # PlopKexec needs a static busybox build.
   plopkexec-busybox = pkgs.busybox.override { enableStatic = true; };
-  # TODO clean this up; `makeStaticBinaries` seems critical, the rest perhaps not.
-  #      Perhaps we can also just use `pkgs.pkgsStatic.kexectools`;
-  #      but should check whether avoiding `pkgsStatic` makes the amount of stuff to fetch smaller.
-  static-kexectools = (pkgs.kexectools.override { stdenv = pkgs.stdenvAdapters.makeStaticBinaries pkgs.stdenv; }).overrideAttrs (old: {
-    # nativeBuildInputs = (old.nativeBuildInputs or []) ++ [
-    nativeBuildInputs = [
-      pkgs.pkgsStatic.stdenv.cc
-      # pkgs.pkgsStatic.stdenv.cc.libc
-      # pkgs.stdenv.cc.libc.static
+
+  # kexec
+  # PlopKexec needs a static `kexec` build.
+  # We offer 2 approaches below, one using glibc and one using musl.
+
+  # Given a kexectools derivation, applies the backport fix to it if necessary:
+  #     https://github.com/NixOS/nixpkgs/pull/60291
+  # Delete this once the README of this project recommends a version
+  # of nixpkgs >= 19.09.
+  fix-kexectools-package = kexectools:
+    if pkgs.lib.versionAtLeast config.system.stateVersion "19.09"
+      then kexectools
+      else kexectools.overrideAttrs (old: {
+        depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
+        nativeBuildInputs = [];
+      });
+
+  # Static `kexec` binary, overriding the normal dynamic (as of writing)
+  # glibc based build.
+  static-kexectools-glibc = (fix-kexectools-package pkgs.kexectools).overrideAttrs (old: {
+    depsBuildBuild = (old.depsBuildBuild or []) ++ [
+      # kexectools compiles a C program called `bin/bin-to-hex` during
+      # its build and runs it. That one needs a libc, but not the
+      # a static one.
+      pkgs.stdenv.cc.libc
     ];
-    configureFlags = [
-      # "CFLAGS=-static"
-      # "CPPFLAGS=-static"
-      "BUILD_CC=${pkgs.pkgsStatic.stdenv.cc.targetPrefix}cc"
+    nativeBuildInputs = (old.nativeBuildInputs or []) ++ [
+      # The actual `kexec` binary needs a static libc.
+      pkgs.stdenv.cc.libc.static
     ];
-    patches = (old.patches or []) ++ [
-      "${pkgs.plopkexec.kexectools_static_patch}"
+    configureFlags = (old.configureFlags or []) ++ [
+      "CFLAGS=--static"
     ];
   });
+
+  # Static `kexec` binary using `pkgsStatic` (this uses musl).
+  static-kexectools-musl = fix-kexectools-package pkgs.pkgsStatic.kexectools;
+
+  # We default to the musl build because the resulting kexec binary
+  # is much smaller (300 KB vs 1 MB at time of writing).
+  static-kexectools =
+    # static-kexectools-musl;
+    static-kexectools-glibc;
+
 in
 {
   # We need no bootloader, because the Chromebook can't use that anyway.
