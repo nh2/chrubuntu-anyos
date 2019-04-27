@@ -44,7 +44,7 @@ let
       # a static one.
       pkgs.stdenv.cc.libc
     ];
-    nativeBuildInputs = (old.nativeBuildInputs or []) ++ [
+    buildInputs = (old.buildInputs or []) ++ [
       # The actual `kexec` binary needs a static libc.
       pkgs.stdenv.cc.libc.static
     ];
