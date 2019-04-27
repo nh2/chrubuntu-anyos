@@ -37,21 +37,10 @@ let
 
   # Static `kexec` binary, overriding the normal dynamic (as of writing)
   # glibc based build.
-  static-kexectools-glibc = (fix-kexectools-package pkgs.kexectools).overrideAttrs (old: {
-    depsBuildBuild = (old.depsBuildBuild or []) ++ [
-      # kexectools compiles a C program called `bin/bin-to-hex` during
-      # its build and runs it. That one needs a libc, but not the
-      # a static one.
-      pkgs.stdenv.cc.libc
-    ];
-    buildInputs = (old.buildInputs or []) ++ [
-      # The actual `kexec` binary needs a static libc.
-      pkgs.stdenv.cc.libc.static
-    ];
-    configureFlags = (old.configureFlags or []) ++ [
-      "CFLAGS=--static"
-    ];
-  });
+  static-kexectools-glibc =
+    (fix-kexectools-package pkgs.kexectools).override {
+      stdenv = pkgs.stdenvAdapters.makeStaticBinaries pkgs.stdenv;
+    };
 
   # Static `kexec` binary using `pkgsStatic` (this uses musl).
   static-kexectools-musl = fix-kexectools-package pkgs.pkgsStatic.kexectools;
