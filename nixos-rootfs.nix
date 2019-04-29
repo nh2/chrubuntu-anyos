@@ -23,17 +23,39 @@ let
   # PlopKexec needs a static `kexec` build.
   # We offer 2 approaches below, one using glibc and one using musl.
 
-  # Given a kexectools derivation, applies the backport fix to it if necessary:
-  #     https://github.com/NixOS/nixpkgs/pull/60291
-  # Delete this once the README of this project recommends a version
-  # of nixpkgs >= 19.09.
-  fix-kexectools-package = kexectools:
-    if pkgs.lib.versionAtLeast config.system.stateVersion "19.09"
-      then kexectools
-      else kexectools.overrideAttrs (old: {
-        depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
-        nativeBuildInputs = [];
-      });
+  fix-kexectools-package = kexectools-package:
+    let
+      # Given a kexectools derivation, applies the backport fix to it if necessary:
+      #     https://github.com/NixOS/nixpkgs/pull/60291
+      # Delete that once the README of this project recommends a version
+      # of nixpkgs >= 19.09.
+      applyBuildFixBackport = kexectoolsDrv:
+        if pkgs.lib.versionAtLeast config.system.stateVersion "19.09"
+          then kexectoolsDrv
+          else kexectoolsDrv.overrideAttrs (old: {
+            depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
+            nativeBuildInputs = [];
+          });
+      # Delete this once patches are merged upstream and available in nixpkgs.
+      applyBugfixes = kexectoolsDrv:
+        kexectoolsDrv.overrideAttrs (old: {
+          patches = (old.patches or []) ++ [
+            # Fix kexec not reading and setting EFI variables when
+            # /etc/mtab is absent (it's absent PlopKexec's initramfs).
+            (pkgs.fetchpatch {
+              url = "https://github.com/nh2/kexec-tools/commit/08981adb06ef90f1ebd6b262378ad0f8099632b8.patch";
+              sha256 = "1hji2bkf9z6qqr6r41zq3dv8jc4138jrrbw94qg9iykvq31b88gm";
+            })
+            # Fix kexec not reading and setting EFI variables when
+            # the sysfs mount is not named "sysfs" (PlopKexec names it "none").
+            (pkgs.fetchpatch {
+              url = "https://github.com/nh2/kexec-tools/commit/4a9547c96fbdbcab8032de07f429a92312994096.patch";
+              sha256 = "0ww5ld9d1g3m6xrmhhhd8giz37731zm783zyjql0svsh52vw93ap";
+            })
+          ];
+        });
+    in
+      applyBugfixes (applyBuildFixBackport kexectools-package);
 
   # Static `kexec` binary, overriding the normal dynamic (as of writing)
   # glibc based build.
@@ -48,8 +70,46 @@ let
   # We default to the musl build because the resulting kexec binary
   # is much smaller (300 KB vs 1 MB at time of writing).
   static-kexectools =
-    # static-kexectools-musl;
-    static-kexectools-glibc;
+    static-kexectools-musl;
+    # static-kexectools-glibc;
+
+  # Linux kernel that boots directly on the Chromebook.
+  # Useful for testing various Linux config options quickly
+  # (though building incrementally with `make` in a kernel source
+  # is still much faster).
+  linux_custom = pkgs.linuxManualConfig {
+    inherit (pkgs) stdenv;
+    # The same kernel versions as in plopkexec-linux-image work here.
+    inherit (pkgs.linux_4_14) src version;
+    allowImportFromDerivation = true;
+    configfile =
+      let
+        # Almost upstream; I've added KEXEC and some console settings
+        # so that kernel messages are printed on boot for debugging.
+        upstreamConfigFile = ./chromebook-kernel-configs/chromebook-config-release-R58-9334.B-6e05ef7-alex.config;
+        # For testing:
+        # upstreamConfigFile = "${pkgs.plopkexec.kernelconfig}/config";
+
+        # What to append to the kernel `upstreamConfigFile`:
+        # Things that NixOS requires in addition in order to build/run.
+        # `kernelPatches` doesn't seem to work here for unknown reason.
+        # The format is the normal kernel format, like `CONFIG_BLA=y`.
+        appendConfigFile = pkgs.writeText "kernel-append-config" ''
+        '';
+      in
+        pkgs.runCommand "kernel-config" {} (''
+          cat ${upstreamConfigFile} ${appendConfigFile} > $out
+        ''
+        # When using the PlopKexec kernel config, this is needed
+        # to use it as a normal kernel, otherwise it cannot compile
+        # because no `initramfs/` dir is present.
+        # + ''
+        #   substituteInPlace "$out" --replace \
+        #     'CONFIG_INITRAMFS_SOURCE="initramfs/"' \
+        #     'CONFIG_INITRAMFS_SOURCE=""'
+        # ''
+        );
+  };
 
 in
 {
@@ -127,13 +187,27 @@ in
 
       plopkexec = super.callPackage ./plopkexec.nix { mountDevtmpfs = true; };
 
-      plopkexec-image-linux_4_4 = super.linuxManualConfig {
-        inherit (super.linux_4_4) src version;
+      plopkexec-linux-image = super.linuxManualConfig {
+        # Select which kernel to use.
+        # Using an older kernel is no problem with PlopKexec, because
+        # it's only used as a bootloader and disappears from memory
+        # as soon as it calls `kexec.
+
+        # inherit (super.linux_4_4) src version; # works
+        # inherit (super.linux_4_9) src version; # does not work, hangs at black screen (power button immediately turns off)
+        inherit (super.linux_4_14) src version; # works
+        # inherit (super.linux_4_19) src version; # does not work, immediately reboots
+        # inherit (super.linux_5_0) src version; # does not work, immediately reboots
+
         inherit (super) stdenv;
         allowImportFromDerivation = true;
         configfile =
           let
-            upstreamConfigFile = "${self.plopkexec.kernelconfig}/config";
+            # Use ChromiumOS's kernel config instead of the one provided
+            # by PlopKexec, for maximum hardware compatibility.
+            upstreamConfigFile =
+              # "${self.plopkexec.kernelconfig}/config";
+              ./chromebook-kernel-configs/chromebook-config-release-R58-9334.B-6e05ef7-alex.config;
 
             # PlopKexec upstream and eugenesan's fork both use a tarball
             # containing device files to pre-populate `/dev`.
@@ -162,15 +236,21 @@ in
               file /init ${self.plopkexec}/init 755 0 0
               file /kexec ${static-kexectools}/bin/kexec 755 0 0
             '';
+
+            initramfs-source = "${initramfs-description} ${plopkexec-busybox}";
           in
             # See https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt
             # for a description how `CONFIG_INITRAMFS_SOURCE` works, and an
             # explanation of the `initramfs-description` format.
             pkgs.runCommand "kernel-config" {} ''
               cat ${upstreamConfigFile} > $out
-              substituteInPlace "$out" --replace \
-                'CONFIG_INITRAMFS_SOURCE="initramfs/"' \
-                'CONFIG_INITRAMFS_SOURCE="${initramfs-description} ${plopkexec-busybox}"'
+
+              # Ensure fields to override are present as expected
+              grep --extended-regexp '^CONFIG_INITRAMFS_SOURCE=' "$out"
+
+              sed --in-place --regexp-extended \
+                's:^CONFIG_INITRAMFS_SOURCE=.*$:CONFIG_INITRAMFS_SOURCE="${initramfs-source}":g' \
+                "$out"
             '';
       };
 
@@ -181,7 +261,7 @@ in
   # boot.kernelPackages = pkgs.linuxPackages_4_4;
   # boot.kernelPackages = pkgs.linuxPackages_4_9; # doesn't work (no modeflash) (but fine when kexec'd)
   # boot.kernelPackages = pkgs.linuxPackages_4_14;
-  boot.kernelPackages = pkgs.linuxPackages; # 4.19 doens't boot directly (but fine when kexec'd)
+  boot.kernelPackages = pkgs.linuxPackages; # 4.19 doesn't boot directly (but fine when kexec'd)
 
   # The custom kernel config currently doesn't allow the firewall;
   # getting this when it's on:
@@ -200,9 +280,11 @@ in
       # kernelPath = kernelImageFullPath;
       # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-linux-4.9.170-ubuntubuild;
       # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-upstream-bisection;
+      # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-kexec-loader-upstreamkernel-v4.4;
       # kernelPath = ./stock-4.7.1-plopkexec; # from https://github.com/eugenesan/chrubuntu-script/tree/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images
       # kernelPath = /home/niklas/src/plopkexec/plopkexec-1.4.1/build/plopkexec;
-      kernelPath = "${pkgs.plopkexec-image-linux_4_4}/bzImage";
+      kernelPath = "${pkgs.plopkexec-linux-image}/bzImage";
+      # kernelPath = "${linux_custom}/bzImage";
       # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
       #   console=tty0
       #   init=/bin/init
@@ -223,17 +305,26 @@ in
       #   nmi_watchdog=panic,lapic
       #   nosplash
       # '';
+      # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
+      #   initrd=/bin/initrd
+      #   cros_efi
+      #   oops=panic
+      #   panic=0
+      #   root=PARTUUID=%U/PARTNROFF=1
+      #   rootwait
+      #   ro
+      #   add_efi_memmap
+      #   i915.modeset=1
+      # '';
+
+      # Minimal working command line arguments.
       kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
         initrd=/bin/initrd
-        cros_efi
-        oops=panic
-        panic=0
         root=PARTUUID=%U/PARTNROFF=1
         rootwait
-        ro
         add_efi_memmap
-        i915.modeset=1
       '';
+
       # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
       #   cros_efi
       #   oops=panic
@@ -261,9 +352,64 @@ in
   system.build.bootstub = pkgs.chromiumos-efi-bootstub;
 
   system.build.plopkexec = pkgs.plopkexec;
-  system.build.plopkexec-image = pkgs.plopkexec-image-linux_4_4;
+  system.build.plopkexec-image = pkgs.plopkexec-linux-image;
   system.build.plopkexec-busybox = plopkexec-busybox;
   system.build.static-kexectools = static-kexectools;
+
+  # From ChrUbuntu's `tynga` script and
+  #   * https://github.com/keithzg/chrubuntu-script/blob/cae7ea8c956a9e49d3dc619bf6c3b0b04cd5f7a8/chrubuntu-install.sh#L44
+  #   * https://gist.github.com/bodil/b14a398189e5643ee03e#partitioning-your-internal-drive
+  #   * http://www.chromium.org/chromium-os/chromiumos-design-docs/disk-format#TOC-GUID-Partition-Table-GPT-
+  # Adapted to pin all programs to nixpkgs versions for full reproducibility.
+  system.build.chromebook-removable-media-partitioning-script =
+    pkgs.writeScript "chromebook-removable-media-partitioning-script" ''
+      #!${pkgs.bash}/bin/bash
+      set -eu -o pipefail
+
+      if [ -z "''${1+x}" ]; then
+        >&2 echo 'Missing device path argument'
+        exit 1
+      fi
+
+      target_disk="$1"
+
+      echo "Got $target_disk as target drive"
+      echo ""
+      echo "WARNING! All data on this device will be wiped out! Continue at your own risk!"
+      echo ""
+      read -p "Press [Enter] to continue on $target_disk or CTRL+C to quit: "
+
+      ext_size=$(${pkgs.libuuid}/bin/blockdev --getsz "$target_disk")
+      aroot_size=$((ext_size - 65600 - 33))
+
+      ${pkgs.parted}/bin/parted --script "$target_disk" "mktable gpt"
+      ${pkgs.vboot_reference}/bin/cgpt create "$target_disk"
+      ${pkgs.vboot_reference}/bin/cgpt add -i 6 -b 64 -s 32768 -S 1 -P 5 -l KERN-A -t "kernel" "$target_disk"
+      ${pkgs.vboot_reference}/bin/cgpt add -i 7 -b 65600 -s "$aroot_size" -l ROOT-A -t "rootfs" "$target_disk"
+      sync
+      ${pkgs.libuuid}/bin/blockdev --rereadpt "$target_disk"
+      ${pkgs.parted}/bin/partprobe "$target_disk"
+
+      if [[ "$target_disk" =~ "mmcblk" ]]
+      then
+        target_rootfs="''${target_disk}p7"
+        target_kern="''${target_disk}p6"
+      else
+        target_rootfs="''${target_disk}7"
+        target_kern="''${target_disk}6"
+      fi
+
+      echo "Target Kernel  Partition: $target_kern"
+      echo "Target Root FS Partition: $target_rootfs"
+
+      if ${pkgs.utillinux}/bin/mount | grep "$target_rootfs"
+      then
+        echo >&2 "Refusing to create file system since $target_rootfs is formatted and mounted"
+        exit 1
+      fi
+
+      ${pkgs.e2fsprogs.bin}/bin/mkfs.ext4 "$target_rootfs"
+    '';
 
   # Install new init script; this ensures that /init is updated after every
   # `nixos-rebuild` run on the machine (the kernel can run init from a
@@ -313,6 +459,13 @@ in
     pkgs.usbutils # lsusb
     pkgs.pciutils # lspci
     pkgs.utillinux # lsblk
+    pkgs.file # the `file` utility
+    # Custom name `kexec-static` four our static kexec build
+    # so that it can be conveniently tested from NixOS.
+    (pkgs.runCommand "kexec-static" {} ''
+      mkdir -p $out/bin
+      ln -s ${static-kexectools}/bin/kexec $out/bin/kexec-static
+    '')
   ];
 
   # networking.interfaces."enp0s29f7u1".ipv4.addresses = [
