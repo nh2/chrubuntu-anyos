@@ -14,13 +14,12 @@ It provides:
 
 Note that on newer Chromebooks you likely don't need this; they can boot Linux without much effort.
 
+
 ## Motivation
 
 [ChrUbuntu](http://chromeos-cr48.blogspot.com/) ([archive link](https://web.archive.org/web/20190809090331/http://chromeos-cr48.blogspot.com/); see also [here](https://github.com/iantrich/ChrUbuntu-Guides/blob/d5996a3c1fd58a02973d50437ed35d735964932f/Guides/Installing%20ChrUbuntu.md)) made it possible to install Ubuntu on older Chromebooks, thus turning them into normal computers without "expiration date" (Google ends supporting older Chromebooks in ChromeOS after a few years).
 
-You can find my backup of the original ChrUbuntu in [`./chrubuntu/`]()
-
-While awesome, had some drawbacks:
+ChrUbuntu, while awesome, had some drawbacks:
 
 * The last update is from 2013. It installed Ubuntu <= 13.10, now vastly outdated.
 * It downloaded a disk image from the Internet.
@@ -40,6 +39,16 @@ I started this quest for my mother, as she used this Chromebook with ChrUbuntu a
 It then turned into a fight against obsolescence of perfectly good (and fast) hardware.
 
 I hope this project will allow many Chromebooks to continue being used, instead of thrown away prematurely due to artificial "end of life"s.
+
+
+## Backup of the original ChrUbuntu
+
+You can find my backup of the original ChrUbuntu scripts in [`chrubuntu/`](./chrubuntu/).
+
+The files it tries to download are now no longer available.
+
+But I found that [archive.org](https://archive.org) still hosted those files, made adapted the scripts to download them from there. See [`chrubuntu-scripts/`](./chrubuntu-scripts/).
+
 
 ## Technical details
 
