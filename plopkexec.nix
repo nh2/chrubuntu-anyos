@@ -1,7 +1,6 @@
 { stdenv, lib, fetchFromGitHub
 , glibc_multi
 , glibc
-, mountDevtmpfs ? false
 }:
 
 stdenv.mkDerivation rec {
@@ -21,10 +20,10 @@ stdenv.mkDerivation rec {
   # We use only the source code from the `src/` subdirectory of the tarball
   # (which is the `plopkexec/plop` subdirectory in the fork).
   src = fetchFromGitHub {
-    owner = "eugenesan";
+    owner = "nh2";
     repo = "chrubuntu-script";
-    rev = "3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852";
-    sha256 = "0wck9bqqby20p1idhjxapbgzvirz1kbhrbmbvjwc82mhx3pak99h";
+    rev = "38ed164b27f832f0a80d6e80ef0df484ab2d4c5c";
+    sha256 = "0kzq1db73rv58y2n89akm2qlwnbq8vhp3kgv1qb5x0gm092lnj13";
   };
 
   outputs = [
@@ -39,8 +38,6 @@ stdenv.mkDerivation rec {
   ];
 
   enableParallelBuilding = true;
-
-  patches = lib.optional mountDevtmpfs ./plopkexec-mount-devtmpfs.patch;
 
   preBuild = ''
     cd plopkexec/plop

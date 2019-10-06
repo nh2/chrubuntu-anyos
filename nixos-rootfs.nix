@@ -23,49 +23,15 @@ let
   # PlopKexec needs a static `kexec` build.
   # We offer 2 approaches below, one using glibc and one using musl.
 
-  fix-kexectools-package = kexectools-package:
-    let
-      # Given a kexectools derivation, applies the backport fix to it if necessary:
-      #     https://github.com/NixOS/nixpkgs/pull/60291
-      # Delete that once the README of this project recommends a version
-      # of nixpkgs >= 19.09.
-      applyBuildFixBackport = kexectoolsDrv:
-        if pkgs.lib.versionAtLeast config.system.stateVersion "19.09"
-          then kexectoolsDrv
-          else kexectoolsDrv.overrideAttrs (old: {
-            depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
-            nativeBuildInputs = [];
-          });
-      # Delete this once patches are merged upstream and available in nixpkgs.
-      applyBugfixes = kexectoolsDrv:
-        kexectoolsDrv.overrideAttrs (old: {
-          patches = (old.patches or []) ++ [
-            # Fix kexec not reading and setting EFI variables when
-            # /etc/mtab is absent (it's absent PlopKexec's initramfs).
-            (pkgs.fetchpatch {
-              url = "https://github.com/nh2/kexec-tools/commit/08981adb06ef90f1ebd6b262378ad0f8099632b8.patch";
-              sha256 = "1hji2bkf9z6qqr6r41zq3dv8jc4138jrrbw94qg9iykvq31b88gm";
-            })
-            # Fix kexec not reading and setting EFI variables when
-            # the sysfs mount is not named "sysfs" (PlopKexec names it "none").
-            (pkgs.fetchpatch {
-              url = "https://github.com/nh2/kexec-tools/commit/4a9547c96fbdbcab8032de07f429a92312994096.patch";
-              sha256 = "0ww5ld9d1g3m6xrmhhhd8giz37731zm783zyjql0svsh52vw93ap";
-            })
-          ];
-        });
-    in
-      applyBugfixes (applyBuildFixBackport kexectools-package);
-
   # Static `kexec` binary, overriding the normal dynamic (as of writing)
   # glibc based build.
   static-kexectools-glibc =
-    (fix-kexectools-package pkgs.kexectools).override {
+    pkgs.kexectools.override {
       stdenv = pkgs.stdenvAdapters.makeStaticBinaries pkgs.stdenv;
     };
 
   # Static `kexec` binary using `pkgsStatic` (this uses musl).
-  static-kexectools-musl = fix-kexectools-package pkgs.pkgsStatic.kexectools;
+  static-kexectools-musl = pkgs.pkgsStatic.kexectools;
 
   # We default to the musl build because the resulting kexec binary
   # is much smaller (300 KB vs 1 MB at time of writing).
@@ -79,16 +45,14 @@ let
   # is still much faster).
   linux_custom = pkgs.linuxManualConfig {
     inherit (pkgs) stdenv;
-    # The same kernel versions as in plopkexec-linux-image work here.
-    inherit (pkgs.linux_4_14) src version;
+    inherit (pkgs.linux) src version;
     allowImportFromDerivation = true;
     configfile =
       let
         # Almost upstream; I've added KEXEC and some console settings
         # so that kernel messages are printed on boot for debugging.
-        upstreamConfigFile = ./chromebook-kernel-configs/chromebook-config-release-R58-9334.B-6e05ef7-alex.config;
-        # For testing:
-        # upstreamConfigFile = "${pkgs.plopkexec.kernelconfig}/config";
+        upstreamConfigFile =
+          ./chromebook-kernel-configs/chromebook-config-release-R58-9334.B-6e05ef7-alex.config;
 
         # What to append to the kernel `upstreamConfigFile`:
         # Things that NixOS requires in addition in order to build/run.
@@ -97,19 +61,42 @@ let
         appendConfigFile = pkgs.writeText "kernel-append-config" ''
         '';
       in
-        pkgs.runCommand "kernel-config" {} (''
+        pkgs.runCommand "kernel-config" {} ''
           cat ${upstreamConfigFile} ${appendConfigFile} > $out
-        ''
-        # When using the PlopKexec kernel config, this is needed
-        # to use it as a normal kernel, otherwise it cannot compile
-        # because no `initramfs/` dir is present.
-        # + ''
-        #   substituteInPlace "$out" --replace \
-        #     'CONFIG_INITRAMFS_SOURCE="initramfs/"' \
-        #     'CONFIG_INITRAMFS_SOURCE=""'
-        # ''
-        );
+        '';
   };
+
+  # Turns a normal Linux kernel image into a signed one
+  # that runs on (unlocked) Chromebooks.
+  #
+  # A ChromeOS kernel is a normal `vmlinux` bzImage with some extra
+  # signatures created by the `vbutil_kernel` tool.
+  # It also include the kernel command line parameters.
+  makeChromiumosSignedKernel = kernelPath:
+  let
+    # Build Chrome OS bootstub that handles the handoff from the custom BIOS to the kernel.
+    bootstub = "${pkgs.chromiumos-efi-bootstub}/bootstub.efi";
+
+    inherit kernelPath;
+
+    # Minimal working command line arguments.
+    kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
+      initrd=/bin/initrd
+      root=PARTUUID=%U/PARTNROFF=1
+      rootwait
+      add_efi_memmap
+    '';
+  in
+    pkgs.runCommand "signed-chromiumos-kernel" {} ''
+      ${pkgs.vboot_reference}/bin/vbutil_kernel \
+        --pack $out \
+        --version 1 \
+        --keyblock ${pkgs.vboot_reference}/share/vboot/devkeys/kernel.keyblock \
+        --signprivate ${pkgs.vboot_reference}/share/vboot/devkeys/kernel_data_key.vbprivk \
+        --bootloader ${bootstub} \
+        --vmlinuz ${kernelPath} \
+        --config ${kernelCommandLineParametersFile}
+    '';
 
 in
 {
@@ -121,23 +108,25 @@ in
     device = "nodev";
   };
 
+  boot.kernelParams = [
+    # TODO Check why this doesn't appear in PlopKexec
+    "boot.shell_on_fail" # makes debugging failing boots easier
+  ];
+
   fileSystems = {
-    # Mounts whatever device has the NIXOS_ROOT label on it as /
-    # (but it's only really there to make systemd happy, so it wont try to remount stuff).
-    # "/".label = "NIXOS_ROOT";
-    # "/".label = "ROOT-A";
-    "/".label = "NIXOS_ROOT_SD"; # TODO important comment about double lables
-    # TODO: Using labels is not good because it means you can't just `dd` e.g.
-    #       an SD card containing NixOS root partition to disk because then
-    #       you'll have the label twice and it may boot the wrong one.
-    #       (Also duplicate labels appearing at startup are racy, depending on
-    #       device initialisation order.)
-    #       Instead, we should somehow communicate from PlopKexec which entry
-    #       was chosen, and mount *that* as root in the initramfs's boot script.
-    #       Perhaps we can use the `root=PARTUUID=%U/PARTNROFF=1` approach that
-    #       Chromebooks use, or just `root` (perhaps the script already
-    #       understands that), appending that kernel command line argument
-    #       to the kexec done by PlopKexec.
+    # In the initramfs, mount the device as `/` that's given as `root=` on the
+    # kernel command line; the NixOS stage-1 boot sets it up as `/dev/root` here:
+    #   https://github.com/NixOS/nixpkgs/blob/03a5cf8444/nixos/modules/system/boot/stage-1-init.sh#L170-L171
+    # This works because I've patched PlopKexec so that it passes `root=`:
+    #   https://github.com/nh2/chrubuntu-script/commit/38ed164b
+    # This is preferable to e.g. using `"/".label = "NIXOS_ROOT_SD"` and
+    # booting by label, because it allows to just `dd` e.g.
+    # an SD card containing the NixOS root partition to disk; with the label
+    # approach then you'd have the label twice (if you leave the SD card in)
+    # and it may boot the wrong one.
+    # (Also duplicate labels appearing at startup are racy, depending on
+    # device initialisation order.)
+    "/".device = "/dev/root";
     # TODO: Mention busybox FEATURE* problem (TODO: This is wrong, comment about it that it's irrelevant for busybox because another option controls that)
     "/".noCheck = true;
   };
@@ -196,19 +185,17 @@ in
       # Add package to create EFI boot stub
       chromiumos-efi-bootstub = super.callPackage ./chromiumos-efi-bootstub.nix {};
 
-      plopkexec = super.callPackage ./plopkexec.nix { mountDevtmpfs = true; };
+      plopkexec = super.callPackage ./plopkexec.nix {};
 
+      # Note that iterating on PlopKexec code with nix builds takes a while
+      # because each change requires a kernel rebuild (as it's baked into the)
+      # kernel's initramfs. You may want to use an out-of-nix build for iteration.
       plopkexec-linux-image = super.linuxManualConfig {
         # Select which kernel to use.
         # Using an older kernel is no problem with PlopKexec, because
         # it's only used as a bootloader and disappears from memory
         # as soon as it calls `kexec.
-
-        # inherit (super.linux_4_4) src version; # works
-        # inherit (super.linux_4_9) src version; # does not work, hangs at black screen (power button immediately turns off)
-        inherit (super.linux_4_14) src version; # works
-        # inherit (super.linux_4_19) src version; # does not work, immediately reboots
-        # inherit (super.linux_5_0) src version; # does not work, immediately reboots
+        inherit (super.linux) src version;
 
         inherit (super) stdenv;
         allowImportFromDerivation = true;
@@ -217,8 +204,9 @@ in
             # Use ChromiumOS's kernel config instead of the one provided
             # by PlopKexec, for maximum hardware compatibility.
             upstreamConfigFile =
-              # "${self.plopkexec.kernelconfig}/config";
               ./chromebook-kernel-configs/chromebook-config-release-R58-9334.B-6e05ef7-alex.config;
+              # For testing, will likely not work on Chromebooks:
+              # "${self.plopkexec.kernelconfig}/config";
 
             # PlopKexec upstream and eugenesan's fork both use a tarball
             # containing device files to pre-populate `/dev`.
@@ -233,6 +221,8 @@ in
             #   `mount -t devtmpfs devtmpfs /dev` next to its usual mounts of
             #   `/proc` and `/sys`.
             #   That makes Linux populate `/dev` automatically.
+            #   (Originally we did this in a patch, now with nh2's fork of
+            #   eugenesan's PlopKexec fork.)
             #
             # Creating `/dev/console` manually is still needed, otherwise
             # PlopKexec's UI is invisible (it still boots its default action
@@ -269,103 +259,26 @@ in
   ];
 
   # Select the kernel that we've overridden with custom config above.
-  # boot.kernelPackages = pkgs.linuxPackages_4_4;
-  # boot.kernelPackages = pkgs.linuxPackages_4_9; # doesn't work (no modeflash) (but fine when kexec'd)
-  # boot.kernelPackages = pkgs.linuxPackages_4_14;
-  boot.kernelPackages = pkgs.linuxPackages; # 4.19 doesn't boot directly (but fine when kexec'd)
+  boot.kernelPackages = pkgs.linuxPackages;
 
   # The custom kernel config currently doesn't allow the firewall;
   # getting this when it's on:
   #     This kernel does not support rpfilter
   networking.firewall.enable = false;
 
-  # A ChromeOS kernel is a normal `vmlinux` bzImage with some extra
-  # signatures created by the `vbutil_kernel` tool.
-  # It also include the kernel command line parameters.
-  system.build.signed-chromiumos-kernel =
-    let
-      # Build Chrome OS bootstub that handles the handoff from the custom BIOS to the kernel.
-      bootstub = "${pkgs.chromiumos-efi-bootstub}/bootstub.efi";
-      # TODO mention kernel regression commit 9479c7cebf
-      #      https://bugzilla.kernel.org/show_bug.cgi?id=197895
-      # kernelPath = kernelImageFullPath;
-      # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-linux-4.9.170-ubuntubuild;
-      # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-upstream-bisection;
-      # kernelPath = /home/niklas/src/chrubuntu/alex-tmp/kerneltree/bzImage-kexec-loader-upstreamkernel-v4.4;
-      # kernelPath = ./stock-4.7.1-plopkexec; # from https://github.com/eugenesan/chrubuntu-script/tree/3247b0d4aefc9e75bee7b41eb4cb191e4a1f0852/images
-      # kernelPath = /home/niklas/src/plopkexec/plopkexec-1.4.1/build/plopkexec;
-      kernelPath = "${pkgs.plopkexec-linux-image}/bzImage";
-      # kernelPath = "${linux_custom}/bzImage";
-      # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
-      #   console=tty0
-      #   init=/bin/init
-      #   initrd=/bin/initrd
-      #   cros_efi
-      #   oops=panic
-      #   panic=0
-      #   root=PARTUUID=%U/PARTNROFF=1
-      #   rootwait
-      #   ro
-      #   cros_debug
-      #   kern_guid=%U
-      #   add_efi_memmap
-      #   boot=local
-      #   noresume
-      #   noswap
-      #   i915.modeset=1
-      #   nmi_watchdog=panic,lapic
-      #   nosplash
-      # '';
-      # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
-      #   initrd=/bin/initrd
-      #   cros_efi
-      #   oops=panic
-      #   panic=0
-      #   root=PARTUUID=%U/PARTNROFF=1
-      #   rootwait
-      #   ro
-      #   add_efi_memmap
-      #   i915.modeset=1
-      # '';
-
-      # Minimal working command line arguments.
-      kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
-        initrd=/bin/initrd
-        root=PARTUUID=%U/PARTNROFF=1
-        rootwait
-        add_efi_memmap
-      '';
-
-      # kernelCommandLineParametersFile = pkgs.writeText "kernel-args" ''
-      #   cros_efi
-      #   oops=panic
-      #   panic=0
-      #   add_efi_memmap
-      #   boot_delay=500
-      #   rootdelay=5
-      #   rdinit=/init
-      #   i915.modeset=1
-      # '';
-    in
-      pkgs.runCommand "signed-chromiumos-kernel" {} ''
-        ${pkgs.vboot_reference}/bin/vbutil_kernel \
-          --pack $out \
-          --version 1 \
-          --keyblock ${pkgs.vboot_reference}/share/vboot/devkeys/kernel.keyblock \
-          --signprivate ${pkgs.vboot_reference}/share/vboot/devkeys/kernel_data_key.vbprivk \
-          --bootloader ${bootstub} \
-          --vmlinuz ${kernelPath} \
-          --config ${kernelCommandLineParametersFile}
-      '';
-
-  # For convenience if people want to build only the bootstub
-  # using `-A config.system.build.bootstub`.
+  # For convenience if people want to build only parts,
+  # using e.g. `-A config.system.build.bootstub`.
   system.build.bootstub = pkgs.chromiumos-efi-bootstub;
-
   system.build.plopkexec = pkgs.plopkexec;
-  system.build.plopkexec-image = pkgs.plopkexec-linux-image;
+  system.build.plopkexec-linux-image = pkgs.plopkexec-linux-image;
   system.build.plopkexec-busybox = plopkexec-busybox;
   system.build.static-kexectools = static-kexectools;
+
+  system.build.signed-chromiumos-kernel-normal =
+    makeChromiumosSignedKernel "${linux_custom}/bzImage";
+
+  system.build.signed-chromiumos-kernel-plopkexec =
+    makeChromiumosSignedKernel "${pkgs.plopkexec-linux-image}/bzImage";
 
   # From ChrUbuntu's `tynga` script and
   #   * https://github.com/keithzg/chrubuntu-script/blob/cae7ea8c956a9e49d3dc619bf6c3b0b04cd5f7a8/chrubuntu-install.sh#L44
