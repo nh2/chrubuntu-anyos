@@ -127,6 +127,17 @@ in
     # "/".label = "NIXOS_ROOT";
     # "/".label = "ROOT-A";
     "/".label = "NIXOS_ROOT_SD"; # TODO important comment about double lables
+    # TODO: Using labels is not good because it means you can't just `dd` e.g.
+    #       an SD card containing NixOS root partition to disk because then
+    #       you'll have the label twice and it may boot the wrong one.
+    #       (Also duplicate labels appearing at startup are racy, depending on
+    #       device initialisation order.)
+    #       Instead, we should somehow communicate from PlopKexec which entry
+    #       was chosen, and mount *that* as root in the initramfs's boot script.
+    #       Perhaps we can use the `root=PARTUUID=%U/PARTNROFF=1` approach that
+    #       Chromebooks use, or just `root` (perhaps the script already
+    #       understands that), appending that kernel command line argument
+    #       to the kexec done by PlopKexec.
     # TODO: Mention busybox FEATURE* problem (TODO: This is wrong, comment about it that it's irrelevant for busybox because another option controls that)
     "/".noCheck = true;
   };
