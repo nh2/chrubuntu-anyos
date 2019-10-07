@@ -243,7 +243,7 @@ in
             # See https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt
             # for a description how `CONFIG_INITRAMFS_SOURCE` works, and an
             # explanation of the `initramfs-description` format.
-            pkgs.runCommand "kernel-config" {} ''
+            pkgs.runCommand "kernel-config" {} (''
               cat ${upstreamConfigFile} > $out
 
               # Ensure fields to override are present as expected
@@ -252,7 +252,19 @@ in
               sed --in-place --regexp-extended \
                 's:^CONFIG_INITRAMFS_SOURCE=.*$:CONFIG_INITRAMFS_SOURCE="${initramfs-source}":g' \
                 "$out"
-            '';
+            ''
+            # Note our PlopKexec kernel does not currently ship modules so anything
+            # defined as `=m` in the kernel config is essentially turned off.
+            # Bake in support for additional file systems that are common amongst
+            # Linux distro installation boot media.
+            + ''
+              sed --in-place --regexp-extended 's:^CONFIG_FAT_FS=.*$:CONFIG_FAT_FS=y:g' "$out"
+              sed --in-place --regexp-extended 's:^CONFIG_ISO9660_FS=.*$:CONFIG_ISO9660_FS=y:g' "$out"
+              sed --in-place --regexp-extended 's:^CONFIG_JOLIET=.*$:CONFIG_JOLIET=y:g' "$out"
+              sed --in-place --regexp-extended 's:^CONFIG_UDF_FS=.*$:CONFIG_UDF_FS=y:g' "$out"
+              sed --in-place --regexp-extended 's:^CONFIG_VFAT_FS=.*$:CONFIG_VFAT_FS=y:g' "$out"
+              sed --in-place --regexp-extended 's:^CONFIG_ZISOFS=.*$:CONFIG_ZISOFS=y:g' "$out"
+            '');
       };
 
     })
