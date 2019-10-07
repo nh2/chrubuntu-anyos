@@ -145,6 +145,8 @@ For my Samsung 500C `alex` Chromebook, here's a list of what works:
   * Screen freeze at kexec time. Probably the Intel driver is not provided in the installer's kernel:
   * My machine can't start with the `framebuffer` driver, but needs the native Intel driver (`i915`). This is included in the Ubuntu installer's initrd but not in the Debian installer's initrd, hence the Debian installer cannot use the screen.
 
+For systems where the installer doesn't work, you may want to try installing it on another machine, and copying the contents over (after ensuring the initrd you've built contains the display driver).
+
 ### Installing Ubuntu with PlopKexec
 
 * Boot into the graphical live system and start the installer.
