@@ -142,7 +142,8 @@ For my Samsung 500C `alex` Chromebook, here's a list of what works:
 * :heavy_check_mark: NixOS 19.03 installer CLI
   * :x: But starting the GUI doesn't work on the C
 * :x: Debian 10.1 installer
-  * Screen freeze at kexec time. Probably the Intel driver is not provided in the installer's kernel.
+  * Screen freeze at kexec time. Probably the Intel driver is not provided in the installer's kernel:
+  * My machine can't start with the `framebuffer` driver, but needs the native Intel driver (`i915`). This is included in the Ubuntu installer's initrd but not in the Debian installer's initrd, hence the Debian installer cannot use the screen.
 
 ### Installing Ubuntu with PlopKexec
 
