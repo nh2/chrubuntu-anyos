@@ -8,7 +8,7 @@ So far the following hardware has been tested:
 
 It provides:
 
-* A version of the [PlopKexec](https://www.plop.at/en/plopkexec/full.html) boot manager, which you can put on the hard drive, USB or SD card, which can then load any normal Linux OS, or OS installer.
+* A version of the [PlopKexec](https://www.plop.at/en/plopkexec/full.html) boot manager, which you can put on the hard drive, USB or SD card, which can then load any normal Linux OS, or OS installer (caveats apply, see [support list below](#linux-distros-bootable-by-plopkexec)).
 * Handy hard drive partitioning scripts.
 * A a fully automated way to put [NixOS](https://nixos.org) Linux on the Chromebook, in case you want to use this distro.
 
@@ -127,3 +127,54 @@ IMAGE=$(NIX_PATH=nixpkgs=https://github.com/NixOS/nixpkgs/archive/95aa1b3c8b.tar
 
 Note that direct booting kernels have a drawback:
 You'll be using _that_ kernel version, no matter what updates you install in NixOS (unless you set it up some hook to also copy new kernels into the Chromebook's kernel partition).
+
+
+## Linux distros bootable by PlopKexec
+
+The project intro says PlopKexec can "load any normal Linux OS, or OS installer".
+This is correct in theory, because it can start any kernel image + initrd, but in practice a successful boot also depends on what the Linux distro does in its initrd and whether the kernel supplied in the installer supports the hardware.
+
+For my Samsung 500C `alex` Chromebook, here's a list of what works:
+
+* :heavy_check_mark: Ubuntu 18.04 / 19.04 installer
+  * Installation will fail at last step but there's an easy workaround ([see below](#installing-ubuntu-with-plopkexec))
+* :heavy_check_mark: NixOS when configured as shown in this project.
+* :heavy_check_mark: NixOS 19.03 installer CLI
+  * :x: But starting the GUI doesn't work on the C
+* :x: Debian 10.1 installer
+  * Screen freeze at kexec time. Probably the Intel driver is not provided in the installer's kernel.
+
+### Installing Ubuntu with PlopKexec
+
+* Boot into the graphical live system and start the installer.
+* When asked whether to unmount a device (that's the SD card if you haven't ejected it yet if you started PlopKexec from that), it doesn't matter if you choose Yes or No.
+* When asked whether to format the device, choose the last step (`I want to do something else`), pick the Chromebook hard drive's _OS root partition_ (usually `/dev/sda2`), and configure it to use it as `/` mount point with `ext4` file system (enable the formatting checkbox).
+  * Do NOT use a separate `/boot` partition or something like that.
+* Select as `Device for boot loader installation` the same partition you chose for `/`.
+* Let the installer finish. It will fail with some error about the bootloader failing to install. That's OK, close the windows.
+* The installer will have failed to a `grub.cfg`. If we reboot now, PlopKexec won't find it. We'll generate it now.
+* Open a terminal. Go into the installed system and generate `grub.cfg` by running:
+  ```bash
+  sudo mount -o bind /dev /target/dev
+  sudo mount -o bind /proc /target/proc
+  sudo mount -o bind /sys /target/sys
+  sudo chroot /target /bin/bash
+  update-grub
+  ```
+  It should print:
+  ```
+  grub-probe: error: cannot find a GRUB device for /dev/sdb1.  Check your device map.
+  done
+  ```
+  Despite the error, the `grub.cfg` we need will have been generated.
+* You can now reboot and choose your installed system in PlopKexec.
+* Future `apt` operations will continue to complain about the grub package. For example, you may see when installing something trivial like `sudo apt install htop`:
+  ```
+  grub-install: error: cannot copy `/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed` to `/boot/efi/EFI/ubuntu/grubx64.efi`: No space left on device.
+  ```
+  This is because the EFI partition on the Chromebook is too small to hold more than its default kernels:
+  `df -h` shows `/dev/sda12` being mounted at `/boot/efi`, being 100% full in my case.
+  Note we don't need GRUB in EFI because we boot via PlopKexec. So:
+* Fix it using `sudo apt remove grub-efi-amd64-signed`.
+
+You should now have a working Ubuntu that you can update as usual.
