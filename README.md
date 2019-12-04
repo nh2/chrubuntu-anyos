@@ -104,6 +104,8 @@ IMAGE=$(NIX_PATH=nixpkgs=https://github.com/NixOS/nixpkgs/archive/95aa1b3c8b.tar
 
 You can now put the device into your Chromebook and boot it (e.g. pressing `Ctrl+U` to boot form SD-card or USB).
 
+(Note sometimes the Chromebook firmware does not find the SD-card or USB when booting when you press `Ctrl+U`, complaining with a beep. I've found that in those situations, re-plugging the device and pressing `Ctrl+U` again helps.)
+
 ### Optional/alternative steps: Putting NixOS on the device
 
 If you additionally want a NixOS installation on the OS partition of the device, run:
@@ -181,3 +183,20 @@ For systems where the installer doesn't work, you may want to try installing it 
 * Fix it using `sudo apt remove grub-efi-amd64-signed`.
 
 You should now have a working Ubuntu that you can update as usual.
+
+## Optional: Putting plopkexec on the Chromebook hard disk
+
+Once you've got your target OS to boot, if you do not want your plopkexec bootloader to live on the external device, but the Chromebook hard disk instead, so that you can use your device fully without an external device, you can copy it over via a shell of your running OS.
+
+1. Verify with `lsblk` that `/dev/sda` and `/dev/sdb` are the Chromebook hard drive and the external device respectively.
+2. Copy plopkexec from the _kernel partition_ on the external device to the corresponding _kernel partition_ on the hard disk:
+   ```bash
+   sudo dd if=/dev/sdb1 of=/dev/sda1 bs=1M
+   ```
+3. Give that _kernel partition_ on the hard disk highest priorities and infinite boot tries with the `cgpt` tool (get it with e.g. `sudo apt-get install cgpt` on Ubuntu):
+   ```
+   cgpt add -i 2 -P 1 -S 1
+   ```
+   Here, `-i 2` is partition number 2 (counting from 1) which corresponds to the `1` (counting from 0) in `/dev/sda1`.
+
+You should now be able to boot completely from the hard disk.
