@@ -469,4 +469,10 @@ in
     "ext2"
     "ext4"
   ];
+
+  # On some hardware like the Samsung Chromebook 500C (Alex)
+  # the new modesetting driver does not work, see:
+  #     https://github.com/NixOS/nixpkgs/issues/75014
+  # Use "intel" in that case:
+  services.xserver.videoDrivers = [ "intel" ];
 }
