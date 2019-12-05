@@ -106,6 +106,10 @@ in
     # From docs: The special value `nodev` means that a GRUB boot menu
     # will be generated, but GRUB itself will not actually be installed.
     device = "nodev";
+    # Ensures that NixOS does not use grub's `search` functionality,
+    # and grub variables are not used, because plopkexec does not
+    # understand them.
+    fsIdentifier = "provided";
   };
 
   boot.kernelParams = [

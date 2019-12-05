@@ -149,6 +149,9 @@ For my Samsung 500C `alex` Chromebook, here's a list of what works:
 
 For systems where the installer doesn't work, you may want to try installing it on another machine, and copying the contents over (after ensuring the initrd you've built contains the display driver).
 
+Another important fact is that PlopKexec does not currently support GRUB variables like `($drive1)`, or the GRUB `search` command; it will not parse them correctly, or fail to boot.
+The easiest workaround is to use a Linux distro that does not generate such entries into `grub.cfg`, or on NixOS use the config option `boot.loader.grub.fsIdentifier = "provided";`, or to implement variable handling in PlopKexec.
+
 ### Installing Ubuntu with PlopKexec
 
 * Boot into the graphical live system and start the installer.
