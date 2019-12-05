@@ -469,6 +469,12 @@ in
     "ext2"
     "ext4"
   ];
+  boot.extraModprobeConfig =
+    # Fix resume not working after suspend (rebooting instead), see:
+    #   https://bugs.chromium.org/p/chromium/issues/detail?id=221905
+    ''
+      options tpm_tis force=1 interrupts=0
+    '';
 
   # On some hardware like the Samsung Chromebook 500C (Alex)
   # the new modesetting driver does not work, see:
